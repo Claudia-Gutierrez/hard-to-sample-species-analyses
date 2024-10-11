@@ -1,7 +1,7 @@
 ---
 title: "Hard-to-sample species are more sensitive to land-use change: implications for global biodiversity metrics — Methods"
 author: "Claudia Gutierrez-Arellano, Tim Newbold, Jenny Hodgson"
-date: '`r format(Sys.time(), "%d %B, %Y")`'
+date: '`r format(Sys.time(), "%B, %Y")`'
 output:
   html_document: 
     collapsed: false
