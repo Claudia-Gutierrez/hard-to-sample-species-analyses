@@ -30,7 +30,7 @@ This document compiles the code used to obtain the 'Records model' and results o
 ## 1. Data
 We used the number of occurrence records in the international collaborative database [GBIF (Global Biodiversity Information Facility)](https://www.gbif.org/) and land cover type and intensity-related abundance data compiled in the [PREDICTS (Projecting Responses of Ecological Diversity in Changing Terrestrial Systems)](https://data.nhm.ac.uk/dataset/release-of-data-added-to-the-predicts-database-november-2022) database.
 
-### 1.1 GBIF occureence count
+### 1.1 GBIF occurrence count
 
 We obtained the number of records (i.e. occurrence count) of all bird, plant and spider species recorded in GBIF. Below, the example code to obtain occurrence count of bird species.
 
