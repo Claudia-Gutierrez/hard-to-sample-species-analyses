@@ -1,0 +1,952 @@
+---
+title: "Hard-to-sample species are more sensitive to land-use change: implications for global biodiversity metrics"
+author: "Claudia Gutierrez-Arellano, Tim Newbold, Jenny Hodgson"
+date: '`r format(Sys.time(), "%B, %Y")`'
+
+output:
+  html_document: 
+    collapsed: false
+    theme: flatly
+    highlight: kate
+    toc: true
+    toc_depth: 4
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+  github_document:
+    toc: yes
+    toc_depth: 4
+    html_preview: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, tidy = TRUE) 
+
+```
+
+
+This document compiles the code used to obtain the model and results of the article "Hard-to-sample species are more sensitive to land-use change: implications for global biodiversity metrics"[(manuscript preprint)](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VI7HXP).  
+
+## 1. Data
+We used the number of occurrence records in the international collaborative database [GBIF (Global Biodiversity Information Facility)](https://www.gbif.org/) and land cover type and intensity-related abundance data compiled in the [PREDICTS (Projecting Responses of Ecological Diversity in Changing Terrestrial Systems)](https://data.nhm.ac.uk/dataset/release-of-data-added-to-the-predicts-database-november-2022) database.
+
+### 1.1 GBIF occurrence count
+
+We obtained the number of records (i.e. occurrence count) of all bird, plant and spider species recorded in GBIF. Below, the example code to obtain occurrence count of bird species.
+
+```{r , eval=FALSE}
+#Load necessary packages
+library(tidyverse) #set of packages to facilitate data manipulation
+library(rgbif) #access to data from GBIF (https://www.gbif.org/) via their API
+
+#Bird species checklist from GBIF
+gbif_birds<-readRDS('data/gbif_spp_birds.rds')
+
+#Filter valid cases 
+birds <- gbif_birds %>%
+  #blank cells are transformed to 'NA'
+  mutate_all(~ na_if(., ""))%>%
+  #drop cases where 'genus' and 'species' fields are NA
+  drop_na(genus, species)%>%
+  #select unique cases for accepted taxon to remove possible synonyms
+  distinct(acceptedTaxonKey, .keep_all = TRUE)%>%
+  #filter 'accepted' taxa
+  filter(taxonomicStatus=='ACCEPTED')%>%
+  #filter records where the recognised taxon rank is 'species'
+  filter(taxonRank=='SPECIES')%>%
+  #filter extinct species
+  filter(iucnRedListCategory!='EX'|iucnRedListCategory!='EW')
+
+#Obtain occurrence number 
+bird_checklist<- as.vector(birds$species)
+bird_spp_records<- data.frame()
+for (i in bird_checklist){
+  #Get number of occurrence records 
+  occ_count<- as.data.frame(occ_count(scientificName = i, year="1600,2023"))
+  names(occ_count)<-'no_records'
+  occ_count$species<-i
+  occ_count$group<-paste0('Bird')
+  bird_spp_records<-rbind(bird_spp_records, occ_count)
+}
+
+#Add taxonomic information
+bird_occ_count<- merge(birds%>%select(species, taxonKey, class,order, family), 
+                       bird_spp_records, by = "species", all.x = TRUE)
+
+
+```
+
+We repeated this for plant and spider species and compile the records for the three groups.
+
+```{r , eval=FALSE}
+#Join data frames of number of records per group 
+all_groups_count<-rbind(bird_occ_count, plant_occ_count, spider_occ_count)%>%
+  #Rename the 'species' column as Best_guess_binomial to relate to Predicts records
+  rename(Best_guess_binomial= species)%>%
+  #Filter species for which number of records is available and is not zero
+  filter(!is.na(no_records))%>%
+  filter(no_records>0)
+
+```
+
+### 1.2 PREDICTS databse
+
+We obtained the land cover type and intensity-related abundance data compiled in the the latest version available of [PREDICTS (Contu et al., 2022; Hudson et al., 2016)](https://data.nhm.ac.uk/dataset/release-of-data-added-to-the-predicts-database-november-2022).
+
+ PREDICTS contains around 4.3 millions of observations from studies assessing the relationship between land use type and intensity and several diversity metrics (e.g. abundance, species richness and biomass among others). Since our interest is focused on comparing change in local abundance per species we filtered the observations relevant to our aim.
+
+#### 1.2.1 Filtered PREDICTS
+
+We filtered: a) records where the _'Diversity metric'_ of the study was 'abundance', b) the specific epithet is known in the _'Best guess binomial'_ column (i.e. we excluded ‘sp.’ names), and c) we selected studies that assessed two or more of the (simpler) land use types. We simplified the land use categorisation of PREDICTS database by following the classification suggested by [Outhwaite et al 2022](https://doi.org/10.1038/s41586-022-04644-x)) 
+
+
+```{r, eval=FALSE}
+# Load necessary packages
+library(tidyverse)  #set of packages to facilitate data manipulation
+
+#Load latest PREDICTS database (2023)
+predicts<- readRDS("data/predicts_updated_2023.rds")
+
+#check if there are any blanks 
+any(predicts == "")
+
+#change any blanks to NAs
+predicts <- predicts %>%
+  mutate_all(~ na_if(., ""))
+
+#Filter only 'Abundance' diversity metric type
+incl_methods<-with(predicts,Diversity_metric_type=="Abundance" & Diversity_metric != "occurrence frequency")
+table(incl_methods,exclude=NA)
+predicts0<-predicts[incl_methods,]
+
+#prepare suitable taxa
+spotential<- !(is.na(predicts0$Family) | is.na(predicts0$Best_guess_binomial))
+
+#ignore all 'Best_guess_binomial' with sp instead of species epithet
+ss<-regexpr(" sp",as.character(predicts0$Best_guess_binomial),ignore.case=T)
+ls<-nchar(as.character(predicts0$Best_guess_binomial))
+summary(ls)#max(36)
+hist(ls-ss)
+unique(predicts0$Best_guess_binomial[(ls-ss)<5])
+
+spotential<- spotential & (ls-ss)>4 
+
+table(spotential,exclude=NULL)
+table(is.na(spotential))#no NAs remaining
+
+#simplify the database to sites only, but retaining some info about taxa included
+psites<-predicts0%>%
+  select(1:48)%>%
+  distinct()
+
+sapply(psites,function(x){length(unique(x))})# SSS and SSBS are same dimension as data frame, meaning everything else is invariant within them 
+
+plistlengths<- predicts0 %>%
+   select(SSS, 49, 59:64) %>%
+   group_by(SSS) %>%
+   summarise(across(everything(), ~length(unique(.))))
+
+
+propidable<-tapply(spotential,INDEX=predicts0[,"SSS"],FUN=mean)
+
+psites$propidable<-propidable[psites[,"SSS"]]
+
+psites<-merge(psites,plistlengths,by="SSS",all=T)
+with(psites,hist(propidable))
+with(psites,hist(Genus))
+with(psites,hist(Species))
+with(psites,hist(Taxon_number))
+with(psites,plot(Taxon_number+1,propidable,pch=4,log="x"))
+#remove sites with no idable species
+psites<-psites[psites$propidable>0,]
+
+length(unique(psites$SS))
+ 
+
+sort(-table(psites$Study_common_taxon))#quick look at taxa that have been retained
+
+```
+Below we explore representation of land uses, intensities, continents and biomes. 
+```{r, eval=FALSE}
+with(psites,table(Predominant_land_use,Use_intensity))
+
+with(psites,table(Biome,exclude=NULL))
+
+with(psites,table(UN_subregion,exclude=NULL))
+with(psites,table(UN_region,exclude=NULL))
+
+
+itab<-with(psites,table(Predominant_land_use,Use_intensity))
+
+itab[,4]/rowSums(itab)  
+#for secondary young, mature and undetermined use, >20% of sites' intensity cannot be decided
+
+#create continent factor, intending to combine this with biome
+
+#North america separated out so that temperate biomes in N and S america potentially have different properties
+
+psites$Continent<-as.character(psites$UN_region)
+
+psites$Continent[psites$UN_region=="Americas"]<-"America other"
+psites$Continent[psites$UN_subregion=="North America"]<-"North America"
+
+psites$Continent<-factor(psites$Continent)
+
+table(psites$Continent)
+
+#examine land-use and intensity differences among geographic areas
+
+nsites<-aggregate(psites$Species,by=psites[,c("Predominant_land_use","Use_intensity","Continent", "Biome")],FUN=length)
+nsites$Use<-with(nsites,factor(paste(Predominant_land_use,Use_intensity),levels=names(sort(-table(paste(Predominant_land_use,Use_intensity))))))
+nsites$Place<-with(nsites,factor(paste(Continent, Biome),levels=names(sort(-table(paste(Continent, Biome))))))
+habmod<-glm(x~Use*Biome +Use*Continent-1,data=nsites,family="poisson")
+anova(habmod,test = "Chisq")
+habsum<-summary(habmod)$coefficients
+write.csv(habsum, "summary_data/landuse distribution_v2.csv")
+
+
+##what secondary veg categories are available when primary veg is not?
+
+primstudies<-unique(psites$SS[psites$Predominant_land_use=="Primary vegetation"])
+
+length(primstudies)
+length(unique(psites$SS))
+#363/638 studies have a primary site for comparison, i.e. 275 do not
+
+table(psites$Predominant_land_use[!(psites$SS %in% primstudies)])
+
+
+matstudies<-unique(psites$SS[psites$Predominant_land_use %in% c("Intermediate secondary vegetation", "Mature secondary vegetation")])
+
+length(matstudies)
+sum(!(matstudies %in% primstudies))
+
+638-363-101
+#174 studies would have no comparison to Primary or inter/mature secondary
+
+secstudies<-unique(psites$SS[psites$Predominant_land_use %in% c("Intermediate secondary vegetation", "Mature secondary vegetation","Young secondary vegetation","Secondary vegetation (indeterminate age)" )])
+
+length(secstudies)
+sum(!(secstudies %in% primstudies))
+
+638-363-178
+#97 studies would have no comparison to Primary or any secondary
+
+itab
+```
+We now add the column _'Outhwaite'_, where we reclassify the observations' land use type (_'Predominant_land_use'_) and intensity (_'Use_intensity'_) following the classification suggested by [Outhwaite et al 2022](https://doi.org/10.1038/s41586-022-04644-x)).
+
+```{r, eval=FALSE}
+psites$Outhwaite<- as.character(psites$Predominant_land_use)
+
+#Exclude urban and cannot decide
+psites$Outhwaite[as.character(psites$Predominant_land_use) %in% 
+                       c("Urban","Cannot decide")]<-NA
+table(psites$Outhwaite)
+
+#Aggregate all types of secondary vegetation
+psites$Outhwaite[as.character(psites$Predominant_land_use) %in% 
+                       c("Intermediate secondary vegetation", "Mature secondary vegetation","Young secondary vegetation","Secondary vegetation (indeterminate age)" )  ]<-"Secondary vegetation"
+
+#Low-Intensity agriculture
+psites$Outhwaite[as.character(psites$Predominant_land_use) %in% c("Plantation forest") &       psites$Use_intensity %in% c("Minimal use")]<- 'Low-intensity agriculture'
+
+psites$Outhwaite[as.character(psites$Predominant_land_use) %in% c("Pasture") &       psites$Use_intensity %in% c("Minimal use", "Light use")]<- 'Low-intensity agriculture'
+
+psites$Outhwaite[as.character(psites$Predominant_land_use) %in% c("Cropland") &       psites$Use_intensity %in% c("Minimal use", "Light use")]<- 'Low-intensity agriculture'
+
+#Low-Intensity agriculture
+psites$Outhwaite[as.character(psites$Predominant_land_use) %in% c("Plantation forest") &       psites$Use_intensity %in% c("Light use", "Intense use")]<- 'High-intensity agriculture'
+
+psites$Outhwaite[as.character(psites$Predominant_land_use) %in% c("Pasture") &       psites$Use_intensity %in% c("Intense use")]<- 'High-intensity agriculture'
+
+psites$Outhwaite[as.character(psites$Predominant_land_use) %in% c("Cropland") &       psites$Use_intensity %in% c("Intense use")]<- 'High-intensity agriculture'
+
+#Exclude cases where uses have undecided intensity
+psites$Outhwaite[as.character(psites$Predominant_land_use) %in% c("Cropland","Plantation forest","Pasture") & psites$Use_intensity %in% c("Cannot decide")]<-NA
+
+#now remove sites with NA Use and studies that no longer have 2 different comparison land covers
+
+names(psites)
+
+psites0<-psites[!is.na(psites$Outhwaite),]
+
+nuses<-tapply(psites0$Outhwaite, psites0$SS,function(x){length(unique(x))})
+
+table(nuses)
+# nuses Outhwaite classification
+# 1   2   3   4 
+# 211 271 124  18
+#we lose 211 studies which don't have a comparison now 
+
+sum(table(nuses))
+#Outwhite
+#624, 14 studies were dropped because contained wholly ineligible use categories
+
+onelevel<-names(nuses[!is.na(nuses) & nuses==1])
+
+with(psites0[psites0$SS %in% onelevel,],table(Predominant_land_use,Use_intensity))
+
+with(psites0[psites0$SS %in% onelevel,],table(Biome,Continent))
+
+with(psites0[psites0$SS %in% onelevel,],table(Predominant_land_use,Use_intensity))/with(psites,table(Predominant_land_use,Use_intensity))
+
+#mainly primary and secondary vegetation sites have been lost, as they must have been compared within themselves
+#about a quarter of pasture sites have been lost, and 20% of minimal use cropland
+
+with(psites0[psites0$SS %in% onelevel,],table(Biome,Continent))/with(psites,table(Biome,Continent))
+#many biomes and continents have a heavy loss of sites
+
+psites0<-psites0[!(psites0$SS %in% onelevel),]
+
+#check taxonomic groups in remaining sites
+
+tt<-table(psites0$Study_common_taxon)
+
+sort(tt[tt>0])#birds, plants and spiders still look viable 
+
+####simplify biomes to broad classes of human impact###
+
+table(psites0$Biome)
+
+levels(psites0$Biome)
+
+psites0$Impact_zone<-"Later impact"
+
+#will include "Tropical & Subtropical Coniferous Forests" "Mangroves"  "Tropical & Subtropical Grasslands, Savannas & Shrublands"  "Tropical & Subtropical Dry Broadleaf Forests" 
+
+psites0$Impact_zone[psites0$Biome %in% c("Temperate Broadleaf & Mixed Forests","Mediterranean Forests, Woodlands & Scrub" ,"Temperate Grasslands, Savannas & Shrublands")]<-"Old impact"
+
+psites0$Impact_zone[psites0$Biome %in% c("Tundra" , "Boreal Forests/Taiga","Temperate Conifer Forests" ,
+                                         "Deserts & Xeric Shrublands","Montane Grasslands & Shrublands"  )]<-"Low impact"
+
+psites0$Impact_zone[psites0$Biome %in% c("Tropical & Subtropical Moist Broadleaf Forests")]<-"Moist Broadleaf"
+
+
+psites0$Impact_zone<-factor(psites0$Impact_zone,levels=c("Low impact","Moist Broadleaf","Later impact","Old impact"))
+
+table(psites0$Impact_zone)
+# Low impact Moist Broadleaf    Later impact      Old impact 
+# 1778            5648            2711            9502 
+
+
+# match back to species data
+names(psites0)
+names(predicts0)
+predicts0$Idable<-spotential
+
+#we won't retain the columns 49:70 which counted the number of unique values at different taxon levels, because this won't stay the same
+
+psites0$sitematch<-as.character(psites0$SSS)
+predicts0$sitematch<-as.character(predicts0$SSS)
+
+predicts1<-left_join(predicts0, psites0%>%select(49, 57:60), by="sitematch")%>%
+  drop_na(Outhwaite)
+
+#now remove species that don't occur in the selected sites
+
+stem(predicts1$Measurement)
+
+summary(predicts1$Idable)
+
+#1.8 M idable
+
+spsmax<-with(predicts1,tapply(Measurement,paste(SS,Taxon_number),max))
+#38717 sp-study combinations
+
+table(spsmax==0,exclude=NULL)
+#1751 to exclude
+
+summary(spsmax)
+
+#investigate distributions of abundances 
+predicts1$Tax_study_maxabund<-as.vector(spsmax[paste(predicts1$SS,predicts1$Taxon_number)])
+
+predicts1[predicts1$Measurement>140000,]
+#few extreme high abundances come from a study of nematodes per m^2 in New Zealand; none are idable
+
+predicts1<-predicts1[predicts1$Idable & predicts1$Tax_study_maxabund>0,]
+
+with(predicts1,min(Measurement[Measurement>0]))
+#[1] 0.000625
+
+hist(log10(predicts1$Measurement+0.000625/2))
+
+studyminpos<-with(predicts1,tapply(Measurement,SS,function(x){min(x[x>0])}))
+
+studyminpos<-studyminpos[names(studyminpos) %in% as.character(predicts1$SS)]#NAs were caused by SS factor levels no longer there
+
+summary(studyminpos)#no NAs left
+
+predicts1$Study_minpos<-as.vector(studyminpos[as.character(predicts1$SS)])
+
+saveRDS(predicts1, 'data/predicts_updated_filtrd_Outhwaite.rds')
+
+```
+
+
+#### 1.2.2 Total abundance and effort
+
+For each PREDICTS study, we calculated the total abundance per species at each land use type (i.e. summing across any sites with the same land use _sensu_ [Outhwaite et al 2022](https://doi.org/10.1038/s41586-022-04644-x)). To deal with zeros we added the minimum abundance per study to the total abundance. Also, we calculated the total effort per land cover type per study
+
+```{r , eval=FALSE}
+
+predicts1<- readRDS("data/predicts_updated_filtrd_Outhwaite.rds")
+
+glimpse(predicts1)
+
+predicts2 <- predicts1%>%
+  #filter groups of interest
+  filter(Class=='Aves'|Phylum =='Tracheophyta'|Order=='Araneae')%>% 
+  #create a column to analyse groups separately
+  mutate(group = ifelse(Class == 'Aves', 'Bird', NA))%>% 
+  mutate(group = ifelse(Phylum == 'Tracheophyta', 'Plant', group))%>%
+  mutate(group = ifelse(Order == 'Araneae', 'Spider', group))%>%
+  #select relevant columns
+  select(SS, group, Best_guess_binomial, Outhwaite, 
+         Measurement, Rescaled_sampling_effort)%>%
+  #sum of abundance and effort by study, species and land use, and create column with the number of sites added up
+  group_by(SS, Best_guess_binomial, Outhwaite)%>%
+  mutate(Measurement_total= sum(Measurement),
+         effort_total= sum(Rescaled_sampling_effort),
+         no_sites = n())%>% 
+  #add up the minimum abundance per study to the total abundance
+  group_by(SS)%>%
+  #create column with the minimum
+  mutate(Measurement_nozeros= Measurement_total + min(Measurement[Measurement> 0]), 
+         min_Measurement= min(Measurement[Measurement> 0]))%>% 
+  ungroup()
+
+#Order land use categories for statistical analyses
+predicts2 <- predicts2 %>%
+  mutate(Outhwaite = factor(Outhwaite,
+                            levels = c('Primary vegetation', 'Secondary vegetation', 'Low-intensity agriculture', 'High-intensity agriculture'),
+                            ordered = TRUE))
+
+```
+We then filtered unique observations of species' total abundance per study and kept those where the species were recorded in more than one land use type
+
+```{r , eval=FALSE}
+
+#Filter unique observations of species aggregation per study 
+predicts2<- predicts2%>%
+  distinct(SS,group, Best_guess_binomial, Outhwaite, Measurement_nozeros,effort_total, no_sites, min_Measurement, studyspecies)
+#Filter observations with more than one land use type
+predicts_unique<-predicts2%>%
+  group_by(Best_guess_binomial) %>%
+  filter(n_distinct(Outhwaite) > 1)
+
+```
+#### 1.2.2 Adding and transforming number of records
+We joined the data frame of number of records to the total abundance data frame 
+
+```{r , eval=FALSE}
+#Relate data frames of number of records and total abundance by species name 
+predicts_occ_count<-predicts_unique %>%
+  left_join(all_groups_count%>%select(Best_guess_binomial, no_records,class, order, family), by = "Best_guess_binomial")
+
+```
+We then log10-transformed the number of records and re-scaled them by subtracting the mean of this sample (_ctrlogrec_).
+
+```{r , eval=FALSE}
+#Calculate the mean
+rec_log10mean<-mean(log10(predicts_occ_count$no_records),na.rm = TRUE)
+
+#Re-scale log10-transformed number of records and add as a new variable
+predicts_occ_count$ctrlogrec<- log10(predicts_occ_count$no_records) - rec_log10mean
+
+```
+
+## 2. Analyses
+
+### 2.1 Records model
+
+We produced a linear mixed-effect model using the total abundance (_Measurment_nonzeros_) as  the response variable, land cover type (_Outhwaite_), taxonomic group (_group_) and the interaction between group and the transformed number of species records (_ctrlogrec_) as fixed effects.  Study, and species within study as random effects, and offset the log10-transformed total effort per land cover type per study. 
+
+```{r , eval=FALSE}
+
+#Load necessary packages
+library(lme4)  #linear model with random effects 
+library(lmerTest) #provides p-values in summary tables for lme4 models
+records_model<-lmer(log10(Measurement_nozeros)~ Outhwaite*(ctrlogrec:group)+ group +(1|SS/Best_guess_binomial) + offset(log10(effort_total)), predicts_occ_count, na.action='na.omit')
+
+summary(records_model)
+```
+
+#### 2.1.1 Models comparison
+We compared the goodness-of-fit of alternative structure of fixed effects and Records model had the lowest AIC. 
+```{r, eval=FALSE}
+
+#model without number of records
+rm_b<-lmer(log10(Measurement_nozeros)~ Outhwaite*group+ group +(1|SS/Best_guess_binomial) + offset(log10(effort_total)), predicts_occ_count, na.action='na.omit')
+summary(rm_b)
+
+#model without interaction
+rm_c<-lmer(log10(Measurement_nozeros)~ Outhwaite+(ctrlogrec:group)+ group +(1|SS/Best_guess_binomial) + offset(log10(effort_total)), predicts_occ_count, na.action='na.omit')
+summary(rm_c)
+
+anova(records_model,rm_b,rm_c)
+
+
+```
+
+
+#### 2.1.2 Land use chage effect on abundance
+
+```{r, eval=FALSE}
+
+#Polynomial contrast matrix for four land use types
+shape<-contr.poly(4)
+
+# Contrast coefficients * Records model estimates
+-0.2242*shape[,1]-0.03557*shape[,2]-0.02542*shape[,3]
+#  0.13829702  0.05086539 -0.01529539 -0.17386702
+
+# calculate the difference between levels
+diff(-0.2242*shape[,1]-0.03557*shape[,2]-0.02542*shape[,3])
+# -0.08743163 -0.06616078 -0.15857163
+
+#plot 
+x<-1:4
+y<- -0.2242*shape1[,1]-0.03557*shape1[,2]-0.02542*shape1[,3]
+
+plot(x, y, pch = 19, xlab = 'Land use', ylab = 'Coefficient* Estimate', xaxt = "n", main = 'Land use effect on abundance', cex.main = 0.9 )
+axis(1, at= 1:4,labels = c("Primary \n vegetation", "Secondary \nvegetation", "Low-intensity \nagriculture",  "High-intensity\n agriculture"), cex.main = 1, cex.axis = 0.8)
+lines(x,y)
+
+```
+
+
+### 2.2 Model predictions
+
+We used the Records model (_records_model_) to predict per species abundance at each land use type.
+
+```{r , eval=FALSE}
+#To predict species abundance with the Records model we must define all possible levels of land use types, groups and number of records 
+
+#Select relevant columns to define the observed records sample
+sample_records <- predicts_occ_count %>%
+  distinct(group, Best_guess_binomial, ctrlogrec)
+
+
+# Obtain for all possible levels of number of records, groups and land use types
+predicts_dummy<- sample_records %>%
+  group_by(group, ctrlogrec) %>%
+  mutate(nspp=n()) %>%
+  distinct(group, ctrlogrec,nspp) %>%
+  mutate(effort_total = 1)
+
+Outhwaite <- predicts_occ_count%>%
+  ungroup()%>%
+  distinct(expand.grid(predicts_occ_count$Outhwaite))%>%
+  rename(Outhwaite = Var1)
+
+predicts_dummy_s <- crossing(predicts_dummy, Outhwaite) %>%
+  ungroup() 
+
+# define LU and group as factor variables
+predicts_dummy_s$Outhwaite<- factor(predicts_dummy_s$Outhwaite, levels = c("Primary vegetation", "Secondary vegetation",
+                   "Low-intensity agriculture", "High-intensity agriculture"), ordered = TRUE)
+predicts_dummy_s$group<-factor(predicts_dummy_s$group)
+
+#Model predictions
+all_predicted <- predict(records_model, predicts_dummy_s, re.form = NA)
+
+
+# Organise predictions one column per land use
+pred_s_RM <- predicts_dummy_s %>%
+  #add predicted values
+  mutate(predicted = all_predicted) %>%
+  pivot_wider(id_cols = c(group, ctrlogrec,nspp), names_from = c(Outhwaite),
+              values_from = c(predicted), names_sort = TRUE) %>%
+  ungroup()
+
+```
+
+#### 2.2.1 Proportional differences
+We calculated the proportional difference as the geometric mean difference between one land-use and another across species.
+
+```{r, eval=FALSE}
+
+# Calculate all differences from primary vegetation
+
+Onames<-levels(predicts_dummy_s$Outhwaite)
+
+pred_s_RM[,Onames]<-sapply(pred_s_RM[,Onames],function(x){x-pred_s_RM[,Onames[1]]})
+
+# Calculate weighted mean
+xx<- base::lapply(pred_s_RM[,Onames], function(a){weighted.mean(unlist(a),w=unlist(pred_s_RM[,"nspp"]))})
+
+wtmeans_s<-as.data.frame(pred_s_RM)[0,Onames]
+
+wtmeans_s<-rbind(wtmeans_s,xx)
+
+#proportional differences
+prop_diff<-as.data.frame(10^apply(wtmeans_s[,2:4],2,mean)-1)
+prop_diff$Outhwite<-rownames(prop_diff)
+names(prop_diff) <- c("prop_diff", "Outhwaite")
+prop_diff$obs<- 'Predicts'
+
+```             
+#### 2.2.2 Confidence intervals
+We placed confidence intervals on the predicted, transformed summary of data , i.e. the geometric mean difference between one land-use and another across species (in  _prop_diff_). We accounted for uncertainty in all the model fixed effects and their intercorrelations.
+
+Our approach generates large populations of complete sets of plausible model parameters, as it is more efficient than working out the right way to combine the CIs on each individual parameter. The 'confidence' of this confidence interval should be understood as the confidence in the average effect, not the confidence of what we would find sampling any one location or species
+
+```{r, eval=FALSE}
+library(lme4)  #linear model with random effects 
+library(lmerTest)  #provides p-values in summary tables for lme4 models
+library(tidyverse) #data managment 
+library(Matrix)
+library(gdata)#for upperTriangle of matrices
+library(MASS)#for principal components
+
+# Obtain model parameter covariance matrix ----
+covmat<-vcov(records_model)
+
+# Convert it to a correlation matrix
+cormat<-cov2cor(covmat)
+
+stabs<-summary(records_model)$coefficients # the significance table
+
+# Verify that the variances calculated from covmat match the squared standard errors provided in the model summary stabs
+plot(diag(covmat),stabs[,2]^2,log="xy")
+text(diag(covmat),stabs[,2]^2,rownames(stabs),pos=4)
+
+# Range of correlations observed
+hist(log10(abs(upperTriangle(cormat))*100),breaks=50)# a small tail below 10^-2
+
+image(log10(abs(cormat)*100),breaks=c(-5,-2,-1,0,1,2))
+
+
+# Generate matrix of random normal variables ----
+
+uncor<-matrix(rnorm(100000),nrow=5000) # 20 variables
+
+# standardise variables
+uncor<-as.matrix(scale(uncor))
+
+# compute and visualise correlations
+hist(upperTriangle(cor(uncor))*100,breaks=30)# correlations exist, most in the range -2...2%
+
+# compute principal component analysis
+pcuc<-princomp(uncor)
+
+# subset and scale principal components
+uncor2<-pcuc$scores[,1:18]
+uncor2<-as.matrix(scale(uncor2))
+
+# check effect of scaling 
+apply(uncor2,2,mean)# scaling worked
+apply(uncor2,2,var)
+
+hist(upperTriangle(cor(uncor2))*100,breaks=30)# minute remaining correlations
+
+# Generate correlated variables ----
+
+hist(log10(abs(upperTriangle(covmat,diag=T))))
+
+# Range over 7 ord. magnitude. In case improves precision, scale up
+covbig<-covmat*10^4
+
+# Cholesky decomposition matrix
+cholbig<-chol(covbig)
+
+# Compute covariance and correlation of the standardised principal components transformed with the decomposition matrix
+cored1<- t(as.matrix(t(cholbig)) %*% t(uncor2))
+covout1<-cov(cored1)
+corout1<-cor(cored1)
+
+# Comparison between original and transformed covariance and correlation matrices
+plot(upperTriangle(covmat),upperTriangle(covout1),pch=4) 
+
+plot(abs(upperTriangle(cormat)),abs(upperTriangle(corout1)),log="xy",pch=4)
+abline(0,1)
+
+
+# Generate coefficient population dataframe ----
+
+# Give variables the correct mean and variance 
+coefpop<-as.data.frame(cored1)
+names(coefpop)<-rownames(stabs)
+
+coefpop<-scale(coefpop,center=T,scale=apply(coefpop, 2, sd)/stabs[,2]) # center at zero to divide
+coefpop<-scale(coefpop,center=-stabs[,1],scale=F)# then centre
+cbind(apply(coefpop,2,mean),# scaling worked
+apply(coefpop,2,sd))
+
+```
+
+Now we obtain the confidence intervals by generating new predictions based on the new sets of plausible model parameters (i.e. _coefpop_)
+
+```{r, eval=FALSE}
+
+# dummy response variable needed for model matrix added to dummy data created in section 2.2
+predicts_dummy_s$Measurement_nozeros<- 10^all_predicted
+
+# Generate model matrix for dummy data
+
+mm<-model.matrix(log10(Measurement_nozeros)~ Outhwaite*(ctrlogrec:group)+ group + offset(log10(effort_total)),data=predicts_dummy_s)
+dim(mm)
+
+for(i in 1:5000){
+  
+  coefnow<-coefpop[i,]
+  
+  predicted <- mm %*% coefnow 
+  
+  pred_s_RM <- predicts_dummy_s %>%
+    mutate(predicted = as.vector(predicted)) %>%
+    pivot_wider(id_cols = c(group, ctrlogrec,nspp), names_from = c(Outhwaite),
+                values_from = c(predicted), names_sort = TRUE) %>%
+    ungroup()
+  
+  #calculate all differences from primary 
+  pred_s_RM[,Onames]<-sapply(pred_s_RM[,Onames],function(x){x-pred_s_RM[,Onames[1]]})
+  
+  #weighted mean
+  xx<-  as.data.frame(base::lapply(pred_s_RM[,Onames],function(a){weighted.mean(unlist(a),w=unlist(pred_s_RM[,"nspp"]))}))
+  
+  #add to previous
+  wtmeans_s<-rbind(wtmeans_s,xx)
+  
+}
+
+prop_diff_ci<-data.frame(matrix(ncol = 0, nrow = 3))
+prop_diff_ci$Outhwaite<-names(wtmeans_s[,2:4])
+prop_diff_ci$lowerc<-10^apply(wtmeans_s[,2:4],2,quantile,probs=0.025)-1
+prop_diff_ci$upperc<-10^apply(wtmeans_s[,2:4],2,quantile,probs=0.975)-1
+
+prop_diff<- merge(prop_diff, prop_diff_ci, by = 'Outhwaite')
+
+```
+
+
+### 2.3 Model extrapolation
+Now we use the Records model to extrapolate predictions to bird, plant and spider species not included in the PREDICTS database for which number of records was available (using the same calculations as above, just with more species). 
+
+See section [1.1 GBIF occurrence]((### 1.1 GBIF occurrence)) to obtain the _all_groups_count_ dataframe and section [1.2.2 Adding and transforming number of records]((#### 1.2.2 Adding and transforming number of records)) to obtain the mean value ( _rec_log10mean_ ) used to center the log10 transformed number of records. We then estimated the relative abundance change.
+
+```{r, eval=FALSE}
+
+# First we transform the number of records of all species available in GBIF
+
+#In section 1.2.2
+#rec_log10mean<-mean(log10(predicts_occ_count$no_records),na.rm = TRUE)
+
+all_groups_count$ctrlogrec<- log10(all_groups_count$no_records)-rec_log10mean
+
+# subset of no. of records available
+available_records <- all_groups_count %>%
+  mutate(group = ifelse(group == "Aves", "Bird", group)) %>%
+  mutate(group = ifelse(group == "Tracheophyta", "Plant", group)) %>%
+  mutate(group = ifelse(group == "Araneae", "Spider", group)) %>%
+  distinct(group, Best_guess_binomial, ctrlogrec)
+
+# data frame with ordered level factors of land use
+Outhwaite <- predicts_occ_count %>%
+  ungroup() %>%
+  distinct(expand.grid(predicts_occ_count$Outhwaite)) %>%
+  rename(Outhwaite = Var1)
+
+# predict values for all possible levels of LU groups and number of records, retaining number of spp
+predicts_dummy <- available_records %>%
+  group_by(group, ctrlogrec) %>%
+  mutate(nspp=n()) %>%
+  distinct(group, ctrlogrec,nspp) %>%
+  mutate(effort_total = 1)
+
+
+predicts_dummy_extrap <- crossing(predicts_dummy, Outhwaite) %>%
+  ungroup() 
+
+# define LU and group as factor variables
+predicts_dummy_extrap$Outhwaite<- factor(predicts_dummy_extrap$Outhwaite, levels = c("Primary vegetation", "Secondary vegetation", "Low-intensity agriculture", "High-intensity agriculture"), ordered = TRUE)
+
+predicts_dummy_extrap$group<-factor(predicts_dummy_extrap$group)
+
+# Model extrapolation predictions
+all_predicted <- predict(records_model, predicts_dummy_extrap, re.form = NA)
+
+
+# Organise predictions one column per land use
+pred_extrap_RM <- predicts_dummy_extrap %>%
+  mutate(predicted = all_predicted) %>%
+  pivot_wider(id_cols = c(group, ctrlogrec,nspp), names_from = c(Outhwaite),
+              values_from = c(predicted), names_sort = TRUE) %>%
+  ungroup()
+
+Onames<-levels(predicts_dummy_extrap$Outhwaite)
+
+pred_extrap_RM[,Onames]<-sapply(pred_extrap_RM[,Onames],function(x){x-pred_extrap_RM[,Onames[1]]})
+
+# Calculate weighted mean
+xx<- base::lapply(pred_extrap_RM[,Onames], function(a){weighted.mean(unlist(a),w=unlist(pred_extrap_RM[,"nspp"]))})
+
+wtmeans_x<-as.data.frame(pred_extrap_RM)[0,Onames]
+
+wtmeans_x<-rbind(wtmeans_x,xx)
+
+# Proportional differences
+prop_diff_extrap<-as.data.frame(10^apply(wtmeans_x[,2:4],2,mean)-1)
+prop_diff_extrap$Outhwite<-rownames(prop_diff)
+names(prop_diff_extrap) <- c("prop_diff", "Outhwaite")
+prop_diff_extrap$obs<- 'Extrapolated'
+
+
+#CI for extrapolation estimates----
+
+# dummy response variable needed for model matrix added to dummy data obtained above
+predicts_dummy_extrap$Measurement_nozeros<- 10^all_predicted
+
+# Generate model matrix for extrapolated dummy data
+
+mm<-model.matrix(log10(Measurement_nozeros)~ Outhwaite*(ctrlogrec:group)+ group + offset(log10(effort_total)),data=predicts_dummy_extrap)
+dim(mm)
+
+
+for(i in 1:5000){
+  
+  coefnow<-coefpop[i,]
+  
+  predicted <- mm %*% coefnow 
+  
+  pred_extrap_RM <- predicts_dummy_extrap %>%
+    mutate(predicted = as.vector(predicted)) %>%
+    pivot_wider(id_cols = c(group, ctrlogrec,nspp), names_from = c(Outhwaite),
+                values_from = c(predicted), names_sort = TRUE) %>%
+    ungroup()
+  
+  #calculate all differences from primary 
+  pred_extrap_RM[,Onames]<-sapply(pred_extrap_RM[,Onames],function(x){x-pred_extrap_RM[,Onames[1]]})
+  
+  #weighted mean
+  xx<-  as.data.frame(base::lapply(pred_extrap_RM[,Onames],function(a){weighted.mean(unlist(a),w=unlist(pred_extrap_RM[,"nspp"]))}))
+  
+  #add to previous
+  wtmeans_x<-rbind(wtmeans_x,xx)
+  
+}
+
+
+prop_diff_extra_ci<-data.frame(matrix(ncol = 0, nrow = 3))
+prop_diff_extra_ci$Outhwaite<-names(wtmeans_x[,2:4])
+prop_diff_extra_ci$lowerc<-10^apply(wtmeans_x[,2:4],2,quantile,probs=0.025)-1
+prop_diff_extra_ci$upperc<-10^apply(wtmeans_x[,2:4],2,quantile,probs=0.975)-1
+
+prop_diff_extrap<- merge(prop_diff_extrap, prop_diff_extra_ci, by = 'Outhwaite')
+
+
+```
+
+## 3. Extrapolation robustness
+We assessed the robustness of the 'Records model' to extrapolate predictions species not included in PREDICTS (i.e., species whose only information available is number of records obtained from GBIF).
+
+First, we calculated the probability of a species being absent in at least two land uses as the proportion of zero abundance cases in the _predicts_occ_count_ database squared (0.322= 0.10). We used this probability as a threshold to divide the database into testing (N=2,017) and training datasets (N= 16,681).
+
+We assessed the general fitness of the testing dataset (i.e. cases with less than 10% mean abundance by species per studies) to a) the Records model, (obtained with all observations) and b) the Training model, obtained with the remaining 90% of observations (i.e. cases with more than 10% mean abundance by species per studies).
+
+### 3.1 Fitness to Records model
+
+```{r, eval=FALSE}
+#Calculate the mean abundance values per species by study
+predicts_occ_mean_ab<- predicts_occ_count%>%
+  mutate(trans_ab= log10(Measurement_nozeros))%>%
+  group_by(SS, Best_guess_binomial)%>%
+  summarize(mean_ab= mean(trans_ab))
+
+#Studies and species in with the lowest 10% mean abundance
+test_ss_spp<-predicts_occ_mean_ab%>%
+  filter(ntile(mean_ab, 10) == 1)
+
+#Split predicts_occ_count into testing and training based on the 10% lowest mean abundance
+
+#Testing dataset
+predicts_occ_test<- predicts_occ_count%>%
+  inner_join(test_ss_spp, by = c("SS" = "SS", "Best_guess_binomial" = "Best_guess_binomial"))
+
+length(predicts_occ_test$SS)/length(predicts_occ_count$SS)
+#~11% of records included in testing data
+
+#Training dataset
+predicts_occ_train <- predicts_occ_count %>%
+  ungroup()%>%
+  anti_join(predicts_occ_test)
+
+#Predict testing abundance
+#subset of no. of records available
+sample_records<-predicts_occ_test%>%
+  distinct(group,Best_guess_binomial, ctrlogrec)
+
+#dummy dataset with all possible combinations of land use, taxonomic group and given no. of records in the Testing dataset
+predicts_dummy_rm_test<-predicts_occ_test%>%
+  ungroup()%>%
+  select(Outhwaite, group, ctrlogrec)%>%
+  expand (Outhwaite, group, ctrlogrec)%>%
+  mutate(effort_total = 1)
+
+#predict abundance values with Records Model
+all_predicted<- predict(records_model, predicts_dummy_rm_test, re.form=NA)
+
+RM_test_predicted<- predicts_dummy_rm_test%>%
+  mutate(predicted = all_predicted)
+
+#Retain real combinations of group and no. of records
+predicted_RM_test<-RM_test_predicted%>%
+  inner_join(sample_records, RM_test_predicted, by = NULL)%>%
+  distinct()
+
+
+#Create a dataframe of observed vs predicted values of the testing data
+test_predicts_obs_pred<- inner_join(predicts_occ_test, predicted_RM_test, by =c("ctrlogrec","Best_guess_binomial", 'Outhwaite'))
+
+r_squared_a<-(cor(log10(test_predicts_obs_pred$Measurement_nozeros), test_predicts_obs_pred$predicted))^2
+# 0.001878686
+
+plot(test_predicts_obs_pred$predicted, log10(test_predicts_obs_pred$Measurement_nozeros),  main = 'Records model', xlab = "predicted", ylab = "observed" )
+abline(a = 0, b = 1, col = "red", lty = 2)
+
+
+
+```
+
+
+### 3.2 Fitness to Training model (above 10% mean abundance)
+
+ 
+```{r, eval=FALSE}
+
+# Training model
+RM_train<- lmer(log10(Measurement_nozeros)~ Outhwaite*(ctrlogrec:group)+ group +(1|SS/Best_guess_binomial) + offset(log10(effort_total)), predicts_occ_train, na.action='na.omit')
+
+summary(RM_train)
+
+# Predict abundance values with Training Model (dummy dataset obtained above with all possible combinations of land use, taxonomic group and given no. of records in the Testing dataset)
+all_predicted<- predict(RM_train, predicts_dummy_rm_test, re.form=NA)
+
+RM_test_predicted<- predicts_dummy_rm_test%>%
+  mutate(predicted = all_predicted)
+
+#Retain real combinations of group and no. of records
+predicted_RM_test<-RM_test_predicted%>%
+  inner_join(sample_records, RM_test_predicted, by = NULL)%>%
+  distinct()
+
+#Create a dataframe of observed vs predicted values of the testing data
+test_predicts_obs_pred<- inner_join(predicts_occ_test, predicted_RM_test, by =c("ctrlogrec","Best_guess_binomial", 'Outhwaite'))
+
+r_squared_b<-(cor(log10(test_predicts_obs_pred$Measurement_nozeros), test_predicts_obs_pred$predicted))^2
+#0.0017
+
+plot(test_predicts_obs_pred$predicted, log10(test_predicts_obs_pred$Measurement_nozeros),  main = 'Training model: lower 10% mean abundance', xlab = "predicted", ylab = "observed" )
+abline(a = 0, b = 1, col = "red", lty = 2)
+
+```
+
+
+
+## 4. BII comparison
+We compared our estimations of change with those obtained using the BII model. We obtained the BII estimates by following the [methods described by De Palma et al. (2024)](https://adrianadepalma.github.io/BII_tutorial), using the land cover classification proposed by [Outhwaite et al. 2022](https://doi.org/10.1038/s41586-022-04644-x) and the species _‘Best guess binomial’_ to calculate compositional similarity
+
+We obtained the BII index for a) the same subset of PREDICTS studies we used to fit our model and b) all studies suitable for the index calculation (i.e. those with at least some Primary vegetation data and more than one species). 
+
