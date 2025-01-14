@@ -25,7 +25,7 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, tidy = TRUE
 ```
 
 
-This document compiles the code used to obtain the 'Records model' and results of the article "Hard-to-sample species are more sensitive to land-use change: implications for global biodiversity metrics".  
+This document compiles the code used to obtain the model and results of the article "Hard-to-sample species are more sensitive to land-use change: implications for global biodiversity metrics"[(manuscript preprint)](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VI7HXP).  
 
 ## 1. Data
 We used the number of occurrence records in the international collaborative database [GBIF (Global Biodiversity Information Facility)](https://www.gbif.org/) and land cover type and intensity-related abundance data compiled in the [PREDICTS (Projecting Responses of Ecological Diversity in Changing Terrestrial Systems)](https://data.nhm.ac.uk/dataset/release-of-data-added-to-the-predicts-database-november-2022) database.
